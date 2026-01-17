@@ -1,3 +1,3 @@
-# Eido
+# eido
 
 Generative art with Ruby
