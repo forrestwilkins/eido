@@ -1,8 +1,80 @@
 # Smooth animated shapes using Ruby 2D
 
+require 'fileutils'
 require 'ruby2d'
 
 module Eido
+  # Generates simple sparkle WAV files
+  module SparkleGenerator
+    SAMPLE_RATE = 44_100
+    SOUNDS_DIR = File.join(__dir__, 'sounds')
+
+    def self.generate_all
+      FileUtils.mkdir_p(SOUNDS_DIR)
+      # Clear old sounds to regenerate with new settings
+      Dir.glob(File.join(SOUNDS_DIR, '*.wav')).each { |f| File.delete(f) }
+
+      # Generate sparkles at higher pitches for more sparkle
+      [2400, 3200, 4000, 4800, 5600].each_with_index do |freq, i|
+        generate_sparkle("sparkle_#{i}.wav", frequency: freq, duration: 0.08)
+      end
+    end
+
+    def self.generate_sparkle(filename, frequency:, duration:)
+      path = File.join(SOUNDS_DIR, filename)
+
+      samples = (SAMPLE_RATE * duration).to_i
+      data = Array.new(samples) do |i|
+        t = i.to_f / SAMPLE_RATE
+        # Very fast exponential decay for that quick sparkle
+        envelope = Math.exp(-t * 50)
+        # Much softer amplitude
+        amplitude = 0.06 * envelope
+
+        # Frequency rises slightly for sparkle effect
+        freq_sweep = frequency * (1 + t * 2)
+        wave = Math.sin(2 * Math::PI * freq_sweep * t)
+        # Multiple harmonics for shimmery quality
+        wave += 0.5 * Math.sin(3 * Math::PI * freq_sweep * t)
+        wave += 0.25 * Math.sin(5 * Math::PI * freq_sweep * t)
+        wave += 0.15 * Math.sin(7 * Math::PI * freq_sweep * t)
+
+        (wave * amplitude * 32_767).to_i.clamp(-32_768, 32_767)
+      end
+
+      write_wav(path, data)
+    end
+
+    def self.write_wav(path, samples)
+      File.open(path, 'wb') do |f|
+        # WAV header
+        f.write('RIFF')
+        f.write([36 + samples.size * 2].pack('V'))
+        f.write('WAVE')
+        f.write('fmt ')
+        f.write([16, 1, 1, SAMPLE_RATE, SAMPLE_RATE * 2, 2, 16].pack('VvvVVvv'))
+        f.write('data')
+        f.write([samples.size * 2].pack('V'))
+        f.write(samples.pack('s*'))
+      end
+    end
+  end
+
+  # Manages sparkle sound playback
+  class SoundManager
+    def initialize
+      SparkleGenerator.generate_all
+      @sounds = Dir.glob(File.join(SparkleGenerator::SOUNDS_DIR, '*.wav')).map do |path|
+        Sound.new(path)
+      end
+    end
+
+    def play
+      return if @sounds.empty?
+
+      @sounds.sample.play
+    end
+  end
   WINDOW_WIDTH = 640
   WINDOW_HEIGHT = 480
 
@@ -49,6 +121,7 @@ module Eido
   # Base class for all animated shapes
   class AnimatedShape
     attr_reader :x, :y
+    attr_accessor :sound_manager
 
     def initialize(x:, y:, speed:, color_speed: 0.015)
       @x = x.to_f
@@ -56,6 +129,7 @@ module Eido
       @velocity_x = rand(-speed..speed)
       @velocity_y = rand(-speed..speed)
       @color_cycler = ColorCycler.new(speed: color_speed, offset: rand)
+      @sound_manager = nil
     end
 
     def update
@@ -73,15 +147,21 @@ module Eido
     end
 
     def bounce
+      bounced = false
+
       if @x <= bounds[:left] || @x >= bounds[:right]
         @velocity_x *= -1
         @x = @x.clamp(bounds[:left], bounds[:right])
+        bounced = true
       end
 
       if @y <= bounds[:top] || @y >= bounds[:bottom]
         @velocity_y *= -1
         @y = @y.clamp(bounds[:top], bounds[:bottom])
+        bounced = true
       end
+
+      @sound_manager&.play if bounced
     end
 
     def bounds
@@ -195,6 +275,7 @@ module Eido
   class Scene
     def initialize
       @shapes = []
+      @sound_manager = SoundManager.new
       setup_shapes
     end
 
@@ -234,6 +315,9 @@ module Eido
           speed: rand(2.0..3.5)
         )
       end
+
+      # Assign sound manager to all shapes
+      @shapes.each { |shape| shape.sound_manager = @sound_manager }
     end
   end
 end
