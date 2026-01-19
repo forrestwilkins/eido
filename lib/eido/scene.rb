@@ -37,7 +37,7 @@ module Eido
     end
 
     def add_circles
-      5.times do
+      3.times do
         @shapes << Graphics::Shapes::BouncingCircle.new(
           x: rand(50..(@width - 50)),
           y: rand(50..(@height - 50)),
@@ -48,7 +48,7 @@ module Eido
     end
 
     def add_squares
-      4.times do
+      1.times do
         @shapes << Graphics::Shapes::BouncingSquare.new(
           x: rand(50..(@width - 100)),
           y: rand(50..(@height - 100)),
@@ -59,7 +59,7 @@ module Eido
     end
 
     def add_triangles
-      4.times do
+      1.times do
         @shapes << Graphics::Shapes::BouncingTriangle.new(
           x: rand(80..(@width - 80)),
           y: rand(80..(@height - 80)),
