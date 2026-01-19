@@ -133,8 +133,6 @@ module Eido
       @sounds.sample.play
     end
   end
-  WINDOW_WIDTH = 640
-  WINDOW_HEIGHT = 480
 
   # Smoothly interpolates between colors over time
   class ColorCycler
@@ -181,9 +179,12 @@ module Eido
     attr_reader :x, :y
     attr_accessor :sound_manager, :velocity_x, :velocity_y
 
+    MAX_SPEED = 4.0  # Cap velocity to prevent acceleration over time
+
     def initialize(x:, y:, speed:, color_speed: 0.015)
       @x = x.to_f
       @y = y.to_f
+      @base_speed = speed
       @velocity_x = rand(-speed..speed)
       @velocity_y = rand(-speed..speed)
       @color_cycler = ColorCycler.new(speed: color_speed, offset: rand)
@@ -247,14 +248,20 @@ module Eido
         other.velocity_y -= 2 * dot_other * (-ny)
       end
 
-      # Add a small impulse to ensure they separate
-      impulse = 0.5
-      @velocity_x -= impulse * nx
-      @velocity_y -= impulse * ny
-      other.velocity_x += impulse * nx
-      other.velocity_y += impulse * ny
+      # Clamp velocities to prevent speed accumulation
+      clamp_velocity!
+      other.clamp_velocity!
 
       @sound_manager&.play
+    end
+
+    def clamp_velocity!
+      speed = Math.sqrt(@velocity_x**2 + @velocity_y**2)
+      return if speed <= MAX_SPEED
+
+      scale = MAX_SPEED / speed
+      @velocity_x *= scale
+      @velocity_y *= scale
     end
 
     private
@@ -312,9 +319,9 @@ module Eido
     def bounds
       {
         left: @radius,
-        right: WINDOW_WIDTH - @radius,
+        right: Window.width - @radius,
         top: @radius,
-        bottom: WINDOW_HEIGHT - @radius
+        bottom: Window.height - @radius
       }
     end
 
@@ -344,9 +351,9 @@ module Eido
     def bounds
       {
         left: @half_size,
-        right: WINDOW_WIDTH - @half_size,
+        right: Window.width - @half_size,
         top: @half_size,
-        bottom: WINDOW_HEIGHT - @half_size
+        bottom: Window.height - @half_size
       }
     end
 
@@ -386,9 +393,9 @@ module Eido
     def bounds
       {
         left: @size,
-        right: WINDOW_WIDTH - @size,
+        right: Window.width - @size,
         top: @size,
-        bottom: WINDOW_HEIGHT - @size
+        bottom: Window.height - @size
       }
     end
 
@@ -403,15 +410,51 @@ module Eido
     end
   end
 
+  # Smoothly animated background
+  class AnimatedBackground
+    PALETTE = [
+      [0.05, 0.05, 0.12],  # Deep blue-black
+      [0.12, 0.05, 0.15],  # Deep purple
+      [0.08, 0.10, 0.18],  # Navy
+      [0.15, 0.08, 0.12],  # Dark plum
+      [0.05, 0.12, 0.15],  # Dark teal
+      [0.10, 0.05, 0.18],  # Indigo
+    ].freeze
+
+    def initialize(speed: 0.003)
+      @speed = speed
+      @progress = 0.0
+    end
+
+    def current_color
+      idx = (@progress * PALETTE.size).floor
+      next_idx = (idx + 1) % PALETTE.size
+      blend = (@progress * PALETTE.size) - idx
+
+      c1, c2 = PALETTE[idx], PALETTE[next_idx]
+      rgb = c1.zip(c2).map { |a, b| a + (b - a) * blend }
+      [rgb[0], rgb[1], rgb[2], 1.0]
+    end
+
+    def tick
+      @progress = (@progress + @speed) % 1.0
+    end
+  end
+
   # Orchestrates all animated shapes
   class Scene
-    def initialize
+    def initialize(width, height)
+      @width = width
+      @height = height
       @shapes = []
       @sound_manager = SoundManager.new
+      @background = AnimatedBackground.new
       setup_shapes
     end
 
     def update
+      @background.tick
+      Window.set(background: @background.current_color)
       @shapes.each(&:update)
       handle_collisions
     end
@@ -428,31 +471,31 @@ module Eido
 
     def setup_shapes
       # Add circles
-      3.times do
+      5.times do
         @shapes << BouncingCircle.new(
-          x: rand(50..590),
-          y: rand(50..430),
-          radius: rand(20..40),
+          x: rand(50..(@width - 50)),
+          y: rand(50..(@height - 50)),
+          radius: rand(25..50),
           speed: rand(1.5..3.0)
         )
       end
 
       # Add squares
-      2.times do
+      4.times do
         @shapes << BouncingSquare.new(
-          x: rand(50..540),
-          y: rand(50..380),
-          size: rand(30..60),
+          x: rand(50..(@width - 100)),
+          y: rand(50..(@height - 100)),
+          size: rand(40..70),
           speed: rand(1.5..2.5)
         )
       end
 
       # Add triangles
-      2.times do
+      4.times do
         @shapes << BouncingTriangle.new(
-          x: rand(80..560),
-          y: rand(80..400),
-          size: rand(25..45),
+          x: rand(80..(@width - 80)),
+          y: rand(80..(@height - 80)),
+          size: rand(30..55),
           speed: rand(2.0..3.5)
         )
       end
@@ -463,13 +506,22 @@ module Eido
   end
 end
 
-# Run the animation
-set title: 'eido', width: Eido::WINDOW_WIDTH, height: Eido::WINDOW_HEIGHT
-set background: [0.12, 0.12, 0.14]
+# Run the animation in fullscreen
+set title: 'eido', fullscreen: true
+set background: [0.05, 0.05, 0.12]
 
-scene = Eido::Scene.new
+# Exit on Escape or Q
+on :key_down do |event|
+  close if %w[escape q].include?(event.key)
+end
+
+# Wait for window to initialize, then create scene with actual dimensions
+scene = nil
 
 update do
+  if scene.nil?
+    scene = Eido::Scene.new(Window.width, Window.height)
+  end
   scene.update
 end
 
