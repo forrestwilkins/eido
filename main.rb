@@ -8,6 +8,7 @@ module Eido
   module SparkleGenerator
     SAMPLE_RATE = 44_100
     SOUNDS_DIR = File.join(__dir__, 'sounds')
+    VERSION = 1  # Bump this to regenerate sounds when design changes
 
     # Echo settings - longer delays for retro feel
     ECHO_DELAYS = [0.08, 0.18, 0.3]
@@ -18,14 +19,40 @@ module Eido
     DOWNSAMPLE = 4         # Sample rate reduction factor
     NOISE_AMOUNT = 0.02    # Background noise level
 
+    # Frequencies for the sparkle variations
+    FREQUENCIES = [1800, 2200, 2800, 3200, 3800].freeze
+
     def self.generate_all
       FileUtils.mkdir_p(SOUNDS_DIR)
+
+      return if sounds_up_to_date?
+
+      # Clear old sounds and regenerate
       Dir.glob(File.join(SOUNDS_DIR, '*.wav')).each { |f| File.delete(f) }
 
-      # Lower frequencies for warmer retro sound
-      [1800, 2200, 2800, 3200, 3800].each_with_index do |freq, i|
+      # Use fixed seed for deterministic generation
+      srand(42)
+
+      FREQUENCIES.each_with_index do |freq, i|
         generate_sparkle("sparkle_#{i}.wav", frequency: freq, duration: 0.1)
       end
+
+      # Reset random seed
+      srand
+
+      write_version_file
+    end
+
+    def self.sounds_up_to_date?
+      version_file = File.join(SOUNDS_DIR, '.version')
+      return false unless File.exist?(version_file)
+      return false unless FREQUENCIES.each_index.all? { |i| File.exist?(File.join(SOUNDS_DIR, "sparkle_#{i}.wav")) }
+
+      File.read(version_file).strip == VERSION.to_s
+    end
+
+    def self.write_version_file
+      File.write(File.join(SOUNDS_DIR, '.version'), VERSION.to_s)
     end
 
     def self.generate_sparkle(filename, frequency:, duration:)
