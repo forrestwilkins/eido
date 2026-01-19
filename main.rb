@@ -4,50 +4,108 @@ require 'fileutils'
 require 'ruby2d'
 
 module Eido
-  # Generates simple sparkle WAV files
+  # Generates retro distorted sparkle WAV files with echo
   module SparkleGenerator
     SAMPLE_RATE = 44_100
     SOUNDS_DIR = File.join(__dir__, 'sounds')
 
+    # Echo settings - longer delays for retro feel
+    ECHO_DELAYS = [0.08, 0.18, 0.3]
+    ECHO_DECAYS = [0.5, 0.3, 0.15]
+
+    # Retro effect settings
+    BIT_DEPTH = 6          # Bit crush depth (lower = more crunchy)
+    DOWNSAMPLE = 4         # Sample rate reduction factor
+    NOISE_AMOUNT = 0.02    # Background noise level
+
     def self.generate_all
       FileUtils.mkdir_p(SOUNDS_DIR)
-      # Clear old sounds to regenerate with new settings
       Dir.glob(File.join(SOUNDS_DIR, '*.wav')).each { |f| File.delete(f) }
 
-      # Generate sparkles at higher pitches for more sparkle
-      [2400, 3200, 4000, 4800, 5600].each_with_index do |freq, i|
-        generate_sparkle("sparkle_#{i}.wav", frequency: freq, duration: 0.08)
+      # Lower frequencies for warmer retro sound
+      [1800, 2200, 2800, 3200, 3800].each_with_index do |freq, i|
+        generate_sparkle("sparkle_#{i}.wav", frequency: freq, duration: 0.1)
       end
     end
 
     def self.generate_sparkle(filename, frequency:, duration:)
       path = File.join(SOUNDS_DIR, filename)
 
-      samples = (SAMPLE_RATE * duration).to_i
-      data = Array.new(samples) do |i|
+      total_duration = duration + ECHO_DELAYS.last + 0.1
+      total_samples = (SAMPLE_RATE * total_duration).to_i
+      original_samples = (SAMPLE_RATE * duration).to_i
+
+      # Generate the original sparkle sound
+      original = Array.new(original_samples) do |i|
         t = i.to_f / SAMPLE_RATE
-        # Very fast exponential decay for that quick sparkle
-        envelope = Math.exp(-t * 50)
-        # Much softer amplitude
-        amplitude = 0.06 * envelope
+        envelope = Math.exp(-t * 35)
+        amplitude = 0.08 * envelope
 
-        # Frequency rises slightly for sparkle effect
-        freq_sweep = frequency * (1 + t * 2)
+        freq_sweep = frequency * (1 + t * 1.5)
         wave = Math.sin(2 * Math::PI * freq_sweep * t)
-        # Multiple harmonics for shimmery quality
-        wave += 0.5 * Math.sin(3 * Math::PI * freq_sweep * t)
-        wave += 0.25 * Math.sin(5 * Math::PI * freq_sweep * t)
-        wave += 0.15 * Math.sin(7 * Math::PI * freq_sweep * t)
+        wave += 0.4 * Math.sin(3 * Math::PI * freq_sweep * t)
+        wave += 0.2 * Math.sin(5 * Math::PI * freq_sweep * t)
 
-        (wave * amplitude * 32_767).to_i.clamp(-32_768, 32_767)
+        # Add slight detuned layer for thickness
+        wave += 0.3 * Math.sin(2 * Math::PI * (freq_sweep * 1.01) * t)
+
+        wave * amplitude
       end
 
-      write_wav(path, data)
+      # Apply retro effects to original
+      original = apply_retro_effects(original)
+
+      # Create output buffer with echoes
+      data = Array.new(total_samples, 0.0)
+      original.each_with_index { |v, i| data[i] += v }
+
+      # Add echoes with increasing distortion
+      ECHO_DELAYS.each_with_index do |delay, idx|
+        offset = (delay * SAMPLE_RATE).to_i
+        decay = ECHO_DECAYS[idx]
+        # Each echo gets more crushed
+        crushed_echo = apply_retro_effects(original, extra_crush: idx + 1)
+        crushed_echo.each_with_index do |v, i|
+          data[i + offset] += v * decay if i + offset < total_samples
+        end
+      end
+
+      # Final soft clip for warmth
+      data = data.map { |v| soft_clip(v, 0.12) }
+
+      int_data = data.map { |v| (v * 32_767).to_i.clamp(-32_768, 32_767) }
+      write_wav(path, int_data)
+    end
+
+    def self.apply_retro_effects(samples, extra_crush: 0)
+      crush_depth = BIT_DEPTH - extra_crush
+      crush_depth = [crush_depth, 3].max
+
+      samples.each_with_index.map do |v, i|
+        # Downsample (sample and hold)
+        idx = (i / DOWNSAMPLE) * DOWNSAMPLE
+        v = samples[[idx, samples.size - 1].min]
+
+        # Bit crush
+        steps = (2**crush_depth).to_f
+        v = (v * steps).round / steps
+
+        # Add subtle noise
+        v += (rand - 0.5) * NOISE_AMOUNT
+
+        # Soft waveshaping distortion
+        soft_clip(v, 0.15)
+      end
+    end
+
+    def self.soft_clip(x, threshold)
+      return x if x.abs < threshold
+      sign = x >= 0 ? 1 : -1
+      sign * (threshold + (1 - threshold) * Math.tanh((x.abs - threshold) / (1 - threshold)))
     end
 
     def self.write_wav(path, samples)
       File.open(path, 'wb') do |f|
-        # WAV header
         f.write('RIFF')
         f.write([36 + samples.size * 2].pack('V'))
         f.write('WAVE')
@@ -121,7 +179,7 @@ module Eido
   # Base class for all animated shapes
   class AnimatedShape
     attr_reader :x, :y
-    attr_accessor :sound_manager
+    attr_accessor :sound_manager, :velocity_x, :velocity_y
 
     def initialize(x:, y:, speed:, color_speed: 0.015)
       @x = x.to_f
@@ -137,6 +195,66 @@ module Eido
       bounce
       @color_cycler.tick
       apply_color
+    end
+
+    # Collision radius for physics (treat all shapes as circles)
+    def collision_radius
+      raise NotImplementedError
+    end
+
+    # Check if colliding with another shape
+    def colliding_with?(other)
+      dx = other.x - @x
+      dy = other.y - @y
+      distance = Math.sqrt(dx * dx + dy * dy)
+      min_dist = collision_radius + other.collision_radius
+      distance < min_dist
+    end
+
+    # Bounce collision - shapes reflect off each other like walls
+    def collide_with!(other)
+      dx = other.x - @x
+      dy = other.y - @y
+      distance = Math.sqrt(dx * dx + dy * dy)
+      return if distance.zero?
+
+      # Normal vector pointing from self to other
+      nx = dx / distance
+      ny = dy / distance
+
+      # Separate overlapping shapes first
+      overlap = collision_radius + other.collision_radius - distance
+      return if overlap <= 0
+
+      half_overlap = overlap / 2.0 + 1.0
+      @x -= half_overlap * nx
+      @y -= half_overlap * ny
+      other.instance_variable_set(:@x, other.x + half_overlap * nx)
+      other.instance_variable_set(:@y, other.y + half_overlap * ny)
+
+      # Reflect velocities off the collision normal (like bouncing off a wall)
+      # Self bounces away from other
+      dot_self = @velocity_x * nx + @velocity_y * ny
+      if dot_self > 0  # Moving toward other
+        @velocity_x -= 2 * dot_self * nx
+        @velocity_y -= 2 * dot_self * ny
+      end
+
+      # Other bounces away from self
+      dot_other = other.velocity_x * (-nx) + other.velocity_y * (-ny)
+      if dot_other > 0  # Moving toward self
+        other.velocity_x -= 2 * dot_other * (-nx)
+        other.velocity_y -= 2 * dot_other * (-ny)
+      end
+
+      # Add a small impulse to ensure they separate
+      impulse = 0.5
+      @velocity_x -= impulse * nx
+      @velocity_y -= impulse * ny
+      other.velocity_x += impulse * nx
+      other.velocity_y += impulse * ny
+
+      @sound_manager&.play
     end
 
     private
@@ -185,6 +303,10 @@ module Eido
       @shape = Circle.new(x: @x, y: @y, radius: @radius)
     end
 
+    def collision_radius
+      @radius
+    end
+
     private
 
     def bounds
@@ -204,27 +326,33 @@ module Eido
   end
 
   # Bouncing square with smooth color transitions
+  # Uses center coordinates internally for consistent collision detection
   class BouncingSquare < AnimatedShape
     def initialize(x:, y:, size:, speed:)
       super(x: x, y: y, speed: speed)
       @size = size
-      @shape = Square.new(x: @x, y: @y, size: @size)
+      @half_size = size / 2.0
+      @shape = Square.new(x: @x - @half_size, y: @y - @half_size, size: @size)
+    end
+
+    def collision_radius
+      @half_size * 1.2 # Approximate as circle
     end
 
     private
 
     def bounds
       {
-        left: 0,
-        right: WINDOW_WIDTH - @size,
-        top: 0,
-        bottom: WINDOW_HEIGHT - @size
+        left: @half_size,
+        right: WINDOW_WIDTH - @half_size,
+        top: @half_size,
+        bottom: WINDOW_HEIGHT - @half_size
       }
     end
 
     def apply_color
-      @shape.x = @x
-      @shape.y = @y
+      @shape.x = @x - @half_size
+      @shape.y = @y - @half_size
       @shape.color = current_color
     end
   end
@@ -240,6 +368,10 @@ module Eido
         x2: @x - @size, y2: @y + @size,
         x3: @x + @size, y3: @y + @size
       )
+    end
+
+    def collision_radius
+      @size
     end
 
     def update
@@ -281,9 +413,18 @@ module Eido
 
     def update
       @shapes.each(&:update)
+      handle_collisions
     end
 
     private
+
+    def handle_collisions
+      @shapes.each_with_index do |shape_a, i|
+        @shapes[(i + 1)..].each do |shape_b|
+          shape_a.collide_with!(shape_b) if shape_a.colliding_with?(shape_b)
+        end
+      end
+    end
 
     def setup_shapes
       # Add circles
